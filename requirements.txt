@@ -1,0 +1,4 @@
+spotipy==2.24.0
+yandex-music==2.2.0
+schedule==1.2.2
+requests==2.32.3
