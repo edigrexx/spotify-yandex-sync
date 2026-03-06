@@ -236,10 +236,13 @@ def search_track_on_spotify(
 def like_track_on_spotify(sp: spotipy.Spotify, track_id: str) -> bool:
     """
     Add a track to the user's Spotify Liked Songs.
+    Uses the new PUT /me/library endpoint (replaces deprecated PUT /me/tracks).
     Returns True on success, False on failure.
     """
     try:
-        sp.current_user_saved_tracks_add(tracks=[track_id])
+        uri = f"spotify:track:{track_id}"
+        # Use the new /me/library endpoint with URIs
+        sp._put(f"me/library?uris={uri}")
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to like track on Spotify (id=%s): %s", track_id, exc)
