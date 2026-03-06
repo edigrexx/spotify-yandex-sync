@@ -153,7 +153,10 @@ def _get_spotify_access_token() -> str:
         timeout=15,
     )
     response.raise_for_status()
-    access_token: str = response.json()["access_token"]
+    token_data = response.json()
+    access_token: str = token_data["access_token"]
+    scope: str = token_data.get("scope", "unknown")
+    logger.info("Spotify: token scope = '%s'", scope)
     return access_token
 
 
@@ -247,40 +250,6 @@ def like_track_on_spotify(sp: spotipy.Spotify, track_id: str) -> bool:
 # Yandex helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_yandex_tracks_safe(
-    yandex: YandexClient,
-    track_ids: list[str],
-) -> list:
-    """
-    Fetch full track objects from Yandex in small batches.
-    Falls back to individual fetches if a batch fails (e.g. due to
-    Artist deserialization bugs in the yandex-music library).
-    """
-    BATCH = 10
-    result = []
-    for i in range(0, len(track_ids), BATCH):
-        batch = track_ids[i : i + BATCH]
-        try:
-            time.sleep(YANDEX_REQUEST_DELAY)
-            fetched = yandex.tracks(batch)
-            if fetched:
-                result.extend(fetched)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Batch fetch failed (%d tracks), trying one-by-one: %s",
-                len(batch), exc,
-            )
-            for tid in batch:
-                try:
-                    time.sleep(YANDEX_REQUEST_DELAY * 0.5)
-                    single = yandex.tracks([tid])
-                    if single:
-                        result.extend(single)
-                except Exception:  # noqa: BLE001
-                    logger.debug("Skipping track %s due to fetch error.", tid)
-    return result
-
-
 def get_yandex_liked_tracks_info(yandex: YandexClient) -> list[dict]:
     """
     Fetch recently liked tracks from Yandex Music.
@@ -293,6 +262,8 @@ def get_yandex_liked_tracks_info(yandex: YandexClient) -> list[dict]:
     # liked is a list of TrackShort — we need to fetch full info for artist/title
     track_shorts = liked[:YANDEX_LIKED_LIMIT]
 
+    tracks: list[dict] = []
+    # Fetch full track info in bulk (the API supports it)
     track_ids = []
     for ts in track_shorts:
         if ts.id is not None:
@@ -302,22 +273,22 @@ def get_yandex_liked_tracks_info(yandex: YandexClient) -> list[dict]:
     if not track_ids:
         return []
 
-    full_tracks = _fetch_yandex_tracks_safe(yandex, track_ids)
+    try:
+        time.sleep(YANDEX_REQUEST_DELAY)
+        full_tracks = yandex.tracks(track_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to fetch Yandex track details: %s", exc)
+        return []
 
-    tracks: list[dict] = []
     for t in full_tracks:
-        if not t or not t.title:
-            continue
-        try:
+        if t and t.title:
             artist = t.artists[0].name if t.artists else ""
-        except Exception:  # noqa: BLE001
-            artist = ""
-        if artist:
-            tracks.append({
-                "id": str(t.id),
-                "artist": artist,
-                "title": t.title,
-            })
+            if artist:
+                tracks.append({
+                    "id": str(t.id),
+                    "artist": artist,
+                    "title": t.title,
+                })
 
     logger.info("Yandex: fetched %d liked tracks info.", len(tracks))
     return tracks
