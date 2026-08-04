@@ -61,15 +61,30 @@ Optional:
 
 ### How to get your Yandex Music token
 
-The easiest method is the browser extension **"Yandex Music Token"** available for Chrome/Firefox.
-Alternatively, use the `yandex-music` library's built-in helper:
+Run `get_yandex_token.py` on your local machine:
 
-```python
-from yandex_music import Client
-# Generates a token interactively
-client = Client.from_credentials("your@email.com", "your_password")
-print(client.token)
+```bash
+pip install yandex-music
+python get_yandex_token.py
 ```
+
+It prints the authorization URL, accepts whatever you copy back (the full
+redirect URL, or a bare token), and — importantly — **verifies the token against
+the Music API** before printing it, so you find out immediately whether it works.
+
+```bash
+python get_yandex_token.py --check    # verify a token you already have
+```
+
+> **Yandex OAuth tokens are per-application.** A token minted for another Yandex
+> app (Books, Disk, …) carries that app's scopes and is *not* accepted by
+> `api.music.yandex.net`. The rejection is silent: `/account/status` answers 200
+> without a `uid`, and every later call fails with `ownerOtherwiseUserBindingError`.
+> Always authorize with the Yandex Music `client_id`, which is what this script
+> uses by default.
+
+> **Note:** `Client.from_credentials(email, password)` no longer exists — it was
+> removed in `yandex-music` 2.0.0. Older guides still recommend it.
 
 > **Note:** Keep all tokens secret and never commit them to version control.
 
@@ -95,6 +110,7 @@ The image is built on `python:3.11-slim` which is officially available for
 .
 ├── main.py               # Daemon — runs the bidirectional sync loop
 ├── get_spotify_token.py  # One-time local helper to get refresh token
+├── get_yandex_token.py   # Local helper to obtain / verify YANDEX_TOKEN
 ├── convert_tracklist.py  # One-time helper to convert TXT export to IDs
 ├── requirements.txt      # Python dependencies
 ├── Dockerfile            # Production container definition
