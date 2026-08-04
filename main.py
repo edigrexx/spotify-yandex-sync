@@ -321,6 +321,10 @@ _LIKE_ENDPOINTS = (
     ("me/tracks", _like_via_tracks),
 )
 
+# Cleared for the rest of the process the first time the library read-back is
+# refused, so the verification is attempted but never nagged about.
+_verify_likes = True
+
 
 def like_track_on_spotify(sp: spotipy.Spotify, track_id: str) -> bool:
     """
@@ -345,17 +349,29 @@ def like_track_on_spotify(sp: spotipy.Spotify, track_id: str) -> bool:
         logger.info("Spotify: liked id=%s via a fallback endpoint (%s).",
                     track_id, failures[0].split(":")[0])
 
+    global _verify_likes
+    if not _verify_likes:
+        return True
+
     try:
         contains = sp.current_user_saved_tracks_contains([track_id])
-        if not contains or not contains[0]:
-            logger.warning(
-                "Spotify accepted the like for id=%s but the track is not in the "
-                "library — treating as a failure so it is retried.", track_id,
-            )
-            return False
     except Exception as exc:  # noqa: BLE001
-        # The write succeeded; only the read-back failed. Trust the write.
-        logger.debug("Could not verify Spotify like for id=%s: %s", track_id, exc)
+        # GET /me/tracks/contains is forbidden on some accounts even though
+        # listing /me/tracks is not. Probe once, then stop asking: retrying it
+        # per track costs a request and logs an error for a healthy save.
+        _verify_likes = False
+        logger.info(
+            "Spotify: cannot read the library back (%s). Likes will be trusted "
+            "as written from now on.", exc,
+        )
+        return True
+
+    if not contains or not contains[0]:
+        logger.warning(
+            "Spotify accepted the like for id=%s but the track is not in the "
+            "library — treating as a failure so it is retried.", track_id,
+        )
+        return False
 
     return True
 

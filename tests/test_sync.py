@@ -23,6 +23,8 @@ from store import SP_TO_YA, STATUS_ERROR, STATUS_NOT_FOUND, STATUS_SYNCED, YA_TO
 @pytest.fixture(autouse=True)
 def no_rate_limit_delay(monkeypatch):
     monkeypatch.setattr(main, "YANDEX_REQUEST_DELAY", 0)
+    # The flag is process-wide; reset it so tests do not leak into each other.
+    monkeypatch.setattr(main, "_verify_likes", True)
 
 
 @pytest.fixture()
@@ -102,11 +104,14 @@ class FakeSpotify:
     """Minimal stand-in for spotipy.Spotify."""
 
     def __init__(self, liked=None, catalogue=None, search_error=None,
-                 contains_result=True, library_error=None, tracks_add_error=None):
+                 contains_result=True, library_error=None, tracks_add_error=None,
+                 contains_error=None):
         self.liked = liked or []
         self.catalogue = catalogue or []
         self.search_error = search_error
         self.contains_result = contains_result
+        self.contains_error = contains_error
+        self.contains_calls = 0
         self.library_error = library_error
         self.tracks_add_error = tracks_add_error
         self.added: list[str] = []
@@ -139,6 +144,9 @@ class FakeSpotify:
         self.added.extend(ids)
 
     def current_user_saved_tracks_contains(self, ids):
+        self.contains_calls += 1
+        if self.contains_error:
+            raise self.contains_error
         return [self.contains_result for _ in ids]
 
 
@@ -340,6 +348,22 @@ class TestSpotifyLikeEndpoints:
                          tracks_add_error=RuntimeError("403"))
         assert main.like_track_on_spotify(sp, "sp1") is False
         assert sp.added == []
+
+    def test_forbidden_verification_does_not_fail_the_like(self):
+        sp = FakeSpotify(contains_error=RuntimeError("http status: 403"))
+        assert main.like_track_on_spotify(sp, "sp1") is True
+
+    def test_verification_is_probed_once_then_dropped(self):
+        # Retrying a forbidden read-back per track costs a request and logs an
+        # error every time, for a save that actually worked.
+        sp = FakeSpotify(contains_error=RuntimeError("http status: 403"))
+        for track_id in ("sp1", "sp2", "sp3"):
+            assert main.like_track_on_spotify(sp, track_id) is True
+        assert sp.contains_calls == 1
+
+    def test_verification_still_catches_a_missing_track(self):
+        sp = FakeSpotify(contains_result=False)
+        assert main.like_track_on_spotify(sp, "sp1") is False
 
     def test_reports_both_failures(self, caplog):
         sp = FakeSpotify(library_error=RuntimeError("library boom"),
