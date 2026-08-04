@@ -102,13 +102,16 @@ class FakeSpotify:
     """Minimal stand-in for spotipy.Spotify."""
 
     def __init__(self, liked=None, catalogue=None, search_error=None,
-                 contains_result=True):
+                 contains_result=True, library_error=None, tracks_add_error=None):
         self.liked = liked or []
         self.catalogue = catalogue or []
         self.search_error = search_error
         self.contains_result = contains_result
+        self.library_error = library_error
+        self.tracks_add_error = tracks_add_error
         self.added: list[str] = []
         self.search_calls: list[str] = []
+        self.put_calls: list[str] = []
 
     def current_user_saved_tracks(self, limit=50, offset=0):
         return {"items": [{"track": t} for t in self.liked[offset:offset + limit]]}
@@ -124,7 +127,15 @@ class FakeSpotify:
                              " ".join(a["name"] for a in t["artists"])).lower().split()}]
         return {"tracks": {"items": hits[:limit]}}
 
+    def _put(self, url):
+        self.put_calls.append(url)
+        if self.library_error:
+            raise self.library_error
+        self.added.append(url.rsplit(":", 1)[-1])
+
     def current_user_saved_tracks_add(self, ids):
+        if self.tracks_add_error:
+            raise self.tracks_add_error
         self.added.extend(ids)
 
     def current_user_saved_tracks_contains(self, ids):
@@ -307,6 +318,36 @@ class TestYandexToSpotify:
         main.sync_yandex_to_spotify(sp, ya, store)
 
         assert store.should_attempt(SP_TO_YA, "enmy|incomplete") is False
+
+
+# ---------------------------------------------------------------------------
+# Spotify write endpoints
+# ---------------------------------------------------------------------------
+
+class TestSpotifyLikeEndpoints:
+    def test_uses_the_library_endpoint_first(self):
+        sp = FakeSpotify()
+        assert main.like_track_on_spotify(sp, "sp1") is True
+        assert sp.put_calls == ["me/library?uris=spotify:track:sp1"]
+
+    def test_falls_back_when_library_is_forbidden(self):
+        sp = FakeSpotify(library_error=RuntimeError("http status: 403"))
+        assert main.like_track_on_spotify(sp, "sp1") is True
+        assert sp.added == ["sp1"]
+
+    def test_fails_only_when_every_endpoint_fails(self):
+        sp = FakeSpotify(library_error=RuntimeError("403"),
+                         tracks_add_error=RuntimeError("403"))
+        assert main.like_track_on_spotify(sp, "sp1") is False
+        assert sp.added == []
+
+    def test_reports_both_failures(self, caplog):
+        sp = FakeSpotify(library_error=RuntimeError("library boom"),
+                         tracks_add_error=RuntimeError("tracks boom"))
+        with caplog.at_level("WARNING"):
+            main.like_track_on_spotify(sp, "sp1")
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "library boom" in logged and "tracks boom" in logged
 
 
 # ---------------------------------------------------------------------------

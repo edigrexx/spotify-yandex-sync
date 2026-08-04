@@ -16,6 +16,11 @@ A lightweight Python daemon that **bidirectionally** syncs liked tracks between 
 2. Diffs that list against the state database **before** fetching any metadata, so a quiet run costs one request.
 3. Searches Spotify for each new track, saves the best-scoring match, and reads the library back to confirm it landed.
 
+> Saves go to `PUT /v1/me/library` first. The documented `PUT /v1/me/tracks`
+> currently answers `403 Forbidden` even with `user-library-modify` granted,
+> while reads from `/me/tracks` still work; it is kept as a fallback in case
+> that reverses.
+
 ### Matching
 Rather than accepting whichever result a search returned first, candidates are scored on:
 

@@ -302,19 +302,48 @@ def search_spotify_candidates(sp: spotipy.Spotify, query: str) -> list[TrackMeta
     return candidates
 
 
+def _like_via_library(sp: spotipy.Spotify, track_id: str) -> None:
+    """PUT /v1/me/library?uris=… — undocumented, but the one that works."""
+    sp._put(f"me/library?uris=spotify:track:{track_id}")
+
+
+def _like_via_tracks(sp: spotipy.Spotify, track_id: str) -> None:
+    """PUT /v1/me/tracks?ids=… — the documented endpoint."""
+    sp.current_user_saved_tracks_add([track_id])
+
+
+# Write endpoints in the order they are tried. /me/library is first because
+# /me/tracks currently answers 403 Forbidden for saves even with the
+# user-library-modify scope granted, while reads from /me/tracks still work.
+# The documented endpoint stays as a fallback in case that reverses again.
+_LIKE_ENDPOINTS = (
+    ("me/library", _like_via_library),
+    ("me/tracks", _like_via_tracks),
+)
+
+
 def like_track_on_spotify(sp: spotipy.Spotify, track_id: str) -> bool:
     """
     Save a track to the user's Spotify library and confirm it landed.
 
-    Uses the documented PUT /v1/me/tracks endpoint, then reads the library back:
-    a 2xx from the write says the request was accepted, not that the track is
-    actually saved.
+    Reads the library back afterwards: a 2xx from the write says the request
+    was accepted, not that the track is actually saved.
     """
-    try:
-        sp.current_user_saved_tracks_add([track_id])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to like track on Spotify (id=%s): %s", track_id, exc)
+    failures: list[str] = []
+    for name, endpoint in _LIKE_ENDPOINTS:
+        try:
+            endpoint(sp, track_id)
+            break
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{name}: {exc}")
+    else:
+        logger.warning("Failed to like track on Spotify (id=%s): %s",
+                       track_id, " | ".join(failures))
         return False
+
+    if failures:
+        logger.info("Spotify: liked id=%s via a fallback endpoint (%s).",
+                    track_id, failures[0].split(":")[0])
 
     try:
         contains = sp.current_user_saved_tracks_contains([track_id])
