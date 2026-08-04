@@ -20,7 +20,7 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 # Copy application source
-COPY main.py .
+COPY main.py matching.py store.py ./
 
 # Create a non-root user and the /data directory for the persistent ID cache.
 # Mount /data as a Coolify volume so synced_ids.txt survives container restarts.

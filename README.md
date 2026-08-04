@@ -7,20 +7,34 @@ A lightweight Python daemon that **bidirectionally** syncs liked tracks between 
 ## How it works
 
 ### Spotify → Yandex Music
-1. Fetches the 50 most recently liked tracks from your Spotify account.
-2. Checks the local cache (`synced_spotify_to_yandex.txt`) — if a track has already been processed, it is **skipped entirely** (no API calls).
-3. Searches for each new track on Yandex Music and likes it.
+1. Reads your Spotify liked tracks newest-first, paging until two consecutive pages contain nothing new.
+2. Skips anything already recorded as synced — no API calls at all.
+3. Searches Yandex Music for each new track and likes the best-scoring match.
 
 ### Yandex Music → Spotify
-1. Fetches the 100 most recently liked tracks from your Yandex Music account.
-2. Checks the local cache (`synced_yandex_to_spotify.txt`) — if a track has already been processed, it is skipped.
-3. Searches for each new track on Spotify and adds it to your Liked Songs.
+1. Fetches the full list of Yandex liked track IDs in one call and sorts it by like timestamp.
+2. Diffs that list against the state database **before** fetching any metadata, so a quiet run costs one request.
+3. Searches Spotify for each new track, saves the best-scoring match, and reads the library back to confirm it landed.
 
-### Removal-Aware Logic
-Once a track has been processed (found and liked), it stays in the cache permanently. This means:
-- If you **remove a like** on Yandex, the daemon will **not** re-add it from Spotify.
-- If you **remove a like** on Spotify, the daemon will **not** re-add it from Yandex.
-- On the **very first run**, both libraries are snapshotted as a baseline — existing tracks are never touched.
+### Matching
+Rather than accepting whichever result a search returned first, candidates are scored on:
+
+- **title** similarity, after stripping `- Remastered 2011` / `(Deluxe)` / `(Radio Edit)` style decorations and normalising `feat.` credits into the artist list;
+- **artist** similarity across all credited artists, comparing transliterated forms too — so Spotify's `Basta` matches Yandex's `Баста`, and `Moya Mishel` matches `Моя Мишель`;
+- **duration**, which is the strongest single disambiguator when both services report it.
+
+A clear disagreement on artist or title is disqualifying, and live/karaoke/tribute versions are rejected against a studio original. Anything below `MATCH_THRESHOLD` is logged as a miss along with the best score seen, so the threshold can be tuned from real data. Queries are retried with progressively looser rewrites before a track is declared missing.
+
+### State and retries
+State lives in `sync.db` (SQLite) in `DATA_DIR`, recording per direction and per track whether it was **synced**, **not found**, or hit a transient **error**:
+
+- **synced** — final, never looked at again. Removing a like on either side does not resurrect the track.
+- **error** — always retried on the next run. A transient failure says nothing about the track, so it must not retire it.
+- **not found** — retried up to 4 times, a week apart, then given up on. Catalogues do change.
+
+Successes are mirrored into the opposite direction so a track does not echo back and forth between the two services.
+
+On the **very first run** each library is snapshotted as a baseline, so existing tracks are never pushed across. Flat caches from earlier versions (`synced_spotify_to_yandex.txt`, `synced_yandex_to_spotify.txt`) are imported automatically on startup and left on disk untouched.
 
 ---
 
@@ -57,7 +71,11 @@ Optional:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATA_DIR` | `/data` | Directory for persistent cache files |
+| `DATA_DIR` | `/data` | Directory for the state database (`sync.db`) |
+| `SYNC_INTERVAL_HOURS` | `2` | Hours between sync runs |
+| `MATCH_THRESHOLD` | `0.68` | Minimum match confidence, `0`–`1`. Raise it if wrong tracks slip through, lower it if correct ones are missed |
+| `YANDEX_PROXY_URL` | — | Route Yandex API calls through a proxy. Needed only if the host's IP is geo-blocked (HTTP 451) |
+| `YANDEX_TIMEOUT` | `30` | Seconds per Yandex API call |
 
 ### How to get your Yandex Music token
 
@@ -109,13 +127,28 @@ The image is built on `python:3.11-slim` which is officially available for
 ```
 .
 ├── main.py               # Daemon — runs the bidirectional sync loop
+├── matching.py           # Track matching: normalisation, transliteration, scoring
+├── store.py              # SQLite sync state, retry policy, legacy cache import
 ├── get_spotify_token.py  # One-time local helper to get refresh token
 ├── get_yandex_token.py   # Local helper to obtain / verify YANDEX_TOKEN
-├── convert_tracklist.py  # One-time helper to convert TXT export to IDs
+├── convert_tracklist.py  # Legacy helper for the retired v1 ID cache format
+├── tests/                # Unit and integration tests
 ├── requirements.txt      # Python dependencies
+├── requirements-dev.txt  # Test dependencies
 ├── Dockerfile            # Production container definition
 └── README.md             # This file
 ```
+
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+
+The matching rules and the retry policy are pure functions, so they are tested
+without touching either API; the sync directions are exercised against fake
+clients.
 
 ---
 
